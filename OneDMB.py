@@ -42,8 +42,9 @@ class OneDimensionMaxwellBloch:
         self.z_start = z_start # Start position
         self.z_end = z_end # End position
         
+        #two-level system parameters, which are only relevant for the two-level medium region, but we still need to provide them for the class initialization
         self.n0 = 0.0 #number density of medium
-        self.mu_two_level = 1e-29 # Dipole moment of the two-level system (C*m)
+        self.mu_two_level = None # Dipole moment of the two-level system (C*m)
         self.gamma_0_two_level = 0.042e12
         self.gamma_1_two_level = 6.2e8
         self.gap_two_level = 1.5e15 # energy gap in rad *s^{-1}
@@ -65,6 +66,12 @@ class OneDimensionMaxwellBloch:
         self.boundary_conditions = boundary_conditions
         
         self.H_free = H_free # Free Hamiltonian of the two-level system
+    def two_level_parameters(self, energy_gap, mu_two_level, gamma_0_two_level, gamma_1_two_level, n0):
+        self.gap_two_level = energy_gap
+        self.mu_two_level = mu_two_level
+        self.gamma_0_two_level = gamma_0_two_level
+        self.gamma_1_two_level = gamma_1_two_level
+        self.n0 = n0
         
     # Update the electric and magnetic fields using FDTD method
     def update_fields_vacuum(self, E: np.ndarray, H: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -145,11 +152,11 @@ class OneDimensionMaxwellBloch:
         Cpn = np.exp((Gamma1-Gamma0)*t_now) # population decay term
         
         temp_1 = 2.0*b + Cpn * E *u * self.dt * self.mu_two_level #a array that will be used a lot in the calculation of a_new and b_new
-        temp_2 = 4.0+ self.dt**2 *(2.0*E*E*self.mu_two_level**2 + self.gap_two_level) #a denominator term that will be used in the calculation of a_new and b_new
+        temp_2 = 4.0+ self.dt**2 *(2.0*E*E*self.mu_two_level**2 + self.gap_two_level**2) #a denominator term that will be used in the calculation of a_new and b_new
         
         #update a, b, u using the Maxwell-Bloch equations
         a_new = a + 2.0*self.dt *self.gap_two_level * temp_1 / temp_2
-        b_new = -b + 4*temp_1/temp_2
+        b_new = -b + 4.0*temp_1/temp_2
         u_new = u - 4.0*E*self.dt*self.mu_two_level * temp_1 / (Cpn*temp_2)
         
         #next, update the electric field E using the polarization term from the two-level medium
@@ -159,9 +166,9 @@ class OneDimensionMaxwellBloch:
         E_new = np.copy(E)
         for i in range(self.Nz - 1):
             #the polarization term is calculated using the updated density matrix elements a_new, b_new, u_new
-            #not that the electric field is always real, so as a, b, u, the polarization term is also real
-            
-            E_new[i] = E[i] - (self.dt / (const.epsilon_0 * self.dz)) * (H_new[i + 1] - H_new[i]) - self.dt * An * self.n0 *(b_new[i]*self.gamma_0_two_level - a_new[i]*Gamma1)
+            #note that the electric field is always real, so as a, b, u, the polarization term is also real
+            #please note that the hbar factor is included in the polarization term, which is different from the usual definition of polarization in optics, but it is consistent with the Maxwell-Bloch equations we derived for the two-level system
+            E_new[i] = E[i] - (self.dt / (const.epsilon_0 * self.dz)) * (H_new[i + 1] - H_new[i]) -const.hbar*self.dt * An * self.n0* self.mu_two_level[i] *(b_new[i]*self.gamma_0_two_level - a_new[i]*Gamma1)/const.epsilon_0
         
         # Apply boundary conditions for E
         if self.boundary_conditions[1] == 'periodic':
@@ -265,7 +272,7 @@ class OneDimensionMaxwellBloch:
             H_history[n, :] = H
             a_history[n, :] = [np.real(rho_i[0, 1]) for rho_i in rho]
             b_history[n, :] = [np.imag(rho_i[0, 1]) for rho_i in rho]
-            u_history[n, :] = [rho_i[0, 0] - rho_i[1, 1] for rho_i in rho]
+            u_history[n, :] = [np.real(rho_i[0, 0] - rho_i[1, 1]) for rho_i in rho] #always real
             
             # Update fields and density matrix using the coupled Maxwell-Bloch equations
             E, H, a_new, b_new, u_new = self.update_fields_two_level(E, H, a_history[n], b_history[n], u_history[n], t_now=self.t[n])
@@ -308,9 +315,64 @@ class OneDimensionMaxwellBloch:
         plt.tight_layout()
         #save the animation as gif file
         ani.save(f"{file_name}.gif", writer='pillow')
-        
     
-
+    def animate_two_level_population_inversion(self, u_history: np.ndarray, file_name="population_inversion"):
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        #adjust u_history by  np.exp(-gamma0*t/2) to show the decay of population inversion
+        
+        for it in range(self.Nt):
+            u_history[it, :] = u_history[it, :] * np.exp(-self.gamma_0_two_level * self.t[it] / 2)
+        
+        
+        line, = ax.plot(self.z, u_history[0, :], color='g')
+        ax.set_title('Population Inversion (u)')
+        ax.set_xlabel('Position (m)')
+        ax.set_ylabel('u')
+        ax.set_ylim(np.min(u_history), np.max(u_history))
+        
+        def update(frame):
+            line.set_ydata(u_history[frame, :])
+            return line,
+        
+        ani = animation.FuncAnimation(fig, update, frames=self.Nt, blit=True, interval=50)
+        plt.tight_layout()
+        #save the animation as gif file
+        ani.save(f"{file_name}.gif", writer='pillow')
+    
+    def animate_two_level_coherence(self, a_history: np.ndarray, b_history: np.ndarray, file_name="coherence"):
+        fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+        
+        #adjust a_history and b_history by  np.exp(-gamma1*t/2) to show the decay of coherence
+        
+        for it in range(self.Nt):
+            a_history[it, :] = a_history[it, :] * np.exp(-self.gamma_1_two_level * self.t[it] / 2)
+            b_history[it, :] = b_history[it, :] * np.exp(-self.gamma_1_two_level * self.t[it] / 2)
+        
+        
+        
+        line1, = ax[0].plot(self.z, a_history[0, :], color='m')
+        ax[0].set_title('Real Part of Coherence (a)')
+        ax[0].set_xlabel('Position (m)')
+        ax[0].set_ylabel('a')
+        ax[0].set_ylim(np.min(a_history), np.max(a_history))
+        
+        line2, = ax[1].plot(self.z, b_history[0, :], color='c')
+        ax[1].set_title('Imaginary Part of Coherence (b)')
+        ax[1].set_xlabel('Position (m)')
+        ax[1].set_ylabel('b')
+        ax[1].set_ylim(np.min(b_history), np.max(b_history))
+        
+        def update(frame):
+            line1.set_ydata(a_history[frame, :])
+            line2.set_ydata(b_history[frame, :])
+            return line1, line2
+        
+        ani = animation.FuncAnimation(fig, update, frames=self.Nt, blit=True, interval=50)
+        plt.tight_layout()
+        #save the animation as gif file
+        ani.save(f"{file_name}.gif", writer='pillow')
+    
 class OneDimensionMaxwellBloch_MultipleFrequencies:
     def __init__(self,
                  E0s: list,  # List of initial electric fields for different frequencies (each is a 1D array). They are envelopes. 
@@ -537,70 +599,64 @@ if __name__ == "__main__":
     ##Initial electric field at time t=0
     ##grid is z
     E0 = np.zeros(Nz, dtype=complex)
+    amplitude = 1e7 # Peak electric field amplitude (V/m)
     for i in range(Nz):
         envelope = np.exp(-((z[i] - pulse_center) ** 2) / (2 * (const.c * pulse_duration / (2 * np.sqrt(2 * np.log(2)))) ** 2))
-        E0[i] = envelope * 1e7  # Peak electric field amplitude (V/m)
+        E0[i] = envelope * amplitude  # Peak electric field amplitude (V/m)
     #Initial magnetic field at time t=dt/2
     ##grid is z+dz/2
     H0 = np.zeros(Nz, dtype=complex)
     for i in range(Nz):
         envelope = np.exp(-((z[i] - pulse_center) ** 2) / (2 * (const.c * pulse_duration / (2 * np.sqrt(2 * np.log(2)))) ** 2))
-        H0[i] = envelope *1e7 * np.sqrt(const.epsilon_0/const.mu_0)
-        
+        H0[i] = envelope *amplitude * np.sqrt(const.epsilon_0/const.mu_0)
+    
+    carrier_wave = np.cos(k0 * z - omega0 * t[0])  # Carrier wave at time t=0
+    E0 *= carrier_wave  # Modulate the envelope with the carrier wave
+    H0 *= carrier_wave  # Modulate the envelope with the carrier wave    
 
     
-    
-    
-    
-    #Initial density matrix elements: all atoms are in the ground state
+    #initial density matrix elements
+    #for 0.25e-3<z<0.75e-3, the medium is a two-level system with initial population inversion of 1, i.e., all atoms are in the excited state;
+    #for other regions, the medium is vacuum (no dipole moment, no population inversion)
     rho0 = []
     for i in range(Nz):
-        rho_i = np.array([[1, 0],
-                          [0, 0]], dtype=complex)  # All atoms in ground state
+        if 0.25e-3 < z[i] < 0.75e-3:
+            rho_i = np.array([[1, 0], [0, 0]], dtype=complex)  # all atoms in the excited state
+        else:
+            rho_i = np.array([[0,0],[0,1]],dtype=complex)  # vacuum
         rho0.append(rho_i)
-    
-    #Dipole moment matrix elements: zero for non-polarizable medium
-    mu = []
+    dipole = []
     for i in range(Nz):
-        mu_i = np.array([[0, 0],
-                         [0, 0]], dtype=complex)  # No dipole moment
-        mu.append(mu_i)
-    #Free Hamiltonian of the two-level system
-    H_free = np.array([[0, 0],
-                          [0, 1.6e-19]], dtype=complex)  # Energy difference of 1 eV
+        if 0.25e-3 < z[i] < 0.75e-3:
+            mu_i = 1.0e-30  # dipole moment for the two-level system
+        else:
+            mu_i = 0.0  # no dipole moment in vacuum
+        dipole.append(mu_i)
+
     
-    ##run the simulation, use OneDimensionMaxwellBloch_MultipleFrequencies class
-    ##only one frequency component
-    central_frequencies = [f0]
-    model = OneDimensionMaxwellBloch_MultipleFrequencies(
-        E0s=[E0],
-        H0s=[H0],
-        rho0=rho0,
-        mus=[mu[0]],  # all mus are the same in this example
-        central_frequencies=central_frequencies,
-        H_free=H_free,
-        dz=dz,
-        dt=dt,
-        t_start=t_start,
-        t_end=t_end,
-        z_start=z_start,
-        z_end=z_end,
-        boundary_conditions=('periodic', 'periodic')
-    )
-    
-    #run the simulation
-    E_history, H_history, rho_history = model.run_simulation()
-    #animate the fields
-    model.animate_fields(E_history, H_history, file_name="gaussian_pulse_propagation")
         
+    #into arrays
+    rho0 = np.array(rho0)
+    dipole = np.array(dipole)
+    #scale dipole by hbar
+    dipole = dipole /const.hbar
+    mu_two_level = dipole #dipole moment of the two-level system, which is only nonzero in the region where the two-level medium is present. It is a 1D array with shape (Nz, )
+        
+   
     
+    #do two-level system parameters matter in the vacuum case? they should not, but we still need to provide them for the class initialization
+    #energy_gap
+    energy_gap = omega0 #resonance with the central frequency of the pulse
     
-    #do another simulation with full wavepacket (not envelope)
-    model_full = OneDimensionMaxwellBloch(
-        E0=E0 * np.cos(k0*z),  # Full initial electric field
-        H0=H0 * np.cos(k0*z),  # Full initial magnetic field
+    #free Hamiltonian of the two-level system
+    H_free = np.array([[0, 0], [0, energy_gap]], dtype=complex)
+    
+    # Create an instance of the OneDimensionMaxwellBloch class
+    sim = OneDimensionMaxwellBloch(
+        E0=E0,
+        H0=H0,
         rho0=rho0,
-        mu=mu,
+        mu=dipole,
         H_free=H_free,
         dz=dz,
         dt=dt,
@@ -611,4 +667,31 @@ if __name__ == "__main__":
         boundary_conditions=('periodic', 'periodic')
     )
     
-    model_full.animate_vacuum_fields(*model_full.run_simulation_vacuum()[:2], file_name="gaussian_pulse_propagation_full_wave")
+    #add two-level system parameters, which are only relevant for the two-level medium region, but we still need to provide them for the class initialization
+    sim.two_level_parameters(
+        energy_gap=energy_gap,
+        mu_two_level=mu_two_level,
+        gamma_0_two_level=0.042e12,
+        gamma_1_two_level=6.2e8,
+        n0=1e25
+    )
+    
+    # Run the simulation for the two-level medium case
+    print("Running simulation for two-level medium case...")
+    E_history, H_history, a_history, b_history, u_history = sim.run_simulation_two_level()
+    print("Simulation completed.")
+    # Animate the results for the two-level medium case
+    print("Animating results for two-level medium case...")
+    sim.animate_vacuum_fields(E_history, H_history, file_name="two_level_medium_fields")
+    print("Animation completed.")
+    
+    #show the population inversion animation
+    print("Animating population inversion for two-level medium case...")
+    #sim.animate_two_level_population_inversion(u_history, file_name="two_level_medium_population_inversion")
+    
+    #show the coherence animation
+    print("Animating coherence for two-level medium case...")
+    sim.animate_two_level_coherence(a_history, b_history, file_name="two_level_medium_coherence")
+    
+    print("Animation completed.")
+    
