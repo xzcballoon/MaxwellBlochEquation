@@ -32,7 +32,6 @@ def test_equations_shape():
     state = [1.0, 0.5, -0.5]
     derivatives = solver.equations(state, 0.0)
     assert derivatives.shape == (3,)
-    assert len(derivatives) == 3
     print("✓ Equations shape test passed")
 
 

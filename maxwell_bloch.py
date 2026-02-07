@@ -36,10 +36,15 @@ class MaxwellBlochSolver:
     """
     
     def __init__(self, omega_0=1.0, gamma_perp=0.1, gamma_parallel=0.01, g=0.5):
-        self.omega_0 = omega_0
+        self.omega_0 = omega_0  # Stored for future extensions (detuning effects)
         self.gamma_perp = gamma_perp
         self.gamma_parallel = gamma_parallel
         self.g = g
+        
+        # Note: In the current rotating wave approximation (RWA) and
+        # rotating frame formulation, omega_0 is transformed away.
+        # This parameter is kept for potential future extensions to
+        # include detuning effects: delta = omega_laser - omega_0
     
     def equations(self, state, t, E_ext=None):
         """
